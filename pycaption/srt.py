@@ -29,8 +29,12 @@ class SRTReader(BaseReader):
             end_line = self._find_text_line(start_line, lines)
 
             timing = lines[start_line + 1].split('-->')
-            start = self._srttomicro(timing[0].strip(' \r\n'))
-            end = self._srttomicro(timing[1].strip(' \r\n'))
+
+            try:
+                start = self._srttomicro(timing[0].strip(' \r\n'))
+                end = self._srttomicro(timing[1].strip(' \r\n'))
+            except IndexError:
+                raise Exception('Error on line number {0} expected timing but got {1}'.format(start_line, timing))
 
             nodes = []
 
