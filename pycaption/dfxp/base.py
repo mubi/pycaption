@@ -232,7 +232,13 @@ class DFXPReader(BaseReader):
         # Catch p-tags that do not come up as NavigableString
         elif tag.name == 'p':
             if tag.text:
-                node = CaptionNode.create_text(tag.text, tag.layout_info)
+                """
+                formatted_text: is a catch all statement for dfxp files that contain br tags within a p tag
+                since it is not expecting br tags after seeing a p tag it leaves it in the string causing texts to have
+                lines concatenated together
+                """
+                formatted_text = tag.text.replace('<br/>', '\n').replace('<br>', '\n')
+                node = CaptionNode.create_text(formatted_text, tag.layout_info)
                 self.nodes.append(node)
 
             elif not tag.contents:
