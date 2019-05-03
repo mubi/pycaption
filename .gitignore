@@ -30,3 +30,8 @@ pip-log.txt
 
 # Sphinx documentation build
 docs/_build
+
+# idea/intellij/pycharm
+.idea
+
+.v

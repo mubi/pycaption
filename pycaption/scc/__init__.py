@@ -523,13 +523,20 @@ class SCCWriter(BaseWriter):
 
         # PASS 3:
         # Write captions.
+        # *Note* previous_start_time keeps track of previous start value for
+        #        validating if next iteration Has a start value that is lesser
+        #        or equal to "previous_start_time". Also handling some issues 
+        #        with showing what an empty caption
+        previous_start_time = -1
         for (code, start, end) in codes:
+            while start <= previous_start_time:
+                previous_start_time = previous_start_time + MICROSECONDS_PER_CODEWORD
             output += ('%s\t' % self._format_timestamp(start))
             output += '94ae 94ae 9420 9420 '
             output += code
             output += '942c 942c 942f 942f\n\n'
             if end is not None:
-                output += '%s\t942c 942c\n\n' % self._format_timestamp(end)
+                output += '%s\t94ae 94ae 9420 9420 94d0 94d0 942c 942c 942f 942f\n\n' % self._format_timestamp(end)
 
         return output
 

@@ -59,7 +59,7 @@ class DFXPReader(BaseReader):
             return False
 
     def read(self, content):
-        if type(content) != str:
+        if type(content) != str and type(content) != unicode:
             raise InvalidInputError('The content is not a unicode string.')
 
         dfxp_document = self._get_dfxp_parser_class()(
@@ -67,6 +67,10 @@ class DFXPReader(BaseReader):
 
         caption_dict = {}
         style_dict = {}
+
+        # Sets framerate for frame based timestamp calculations
+        tt = dfxp_document.find('tt')
+        self.framerate = self._get_framerate(tt)
 
         # Each div represents all the captions for a single language.
         for div in dfxp_document.find_all('div'):
@@ -97,9 +101,41 @@ class DFXPReader(BaseReader):
         """
         return LayoutAwareDFXPParser
 
+    def _get_framerate(self, tt):
+        """ Gets the framerate from document's frameRate and/or frameRateMultiplier.
+
+        N.b frameRateMultiplier allows expression of fractional fps.
+
+        As per specifation, if framerate not given, assume 30fps
+        """
+        frame_rate_multiplier = float(1)
+
+        frame_rate_multiplier_string = tt.attrs.get('ttp:frameratemultiplier', None)
+        if frame_rate_multiplier_string is not None:
+            numerator, denominator = frame_rate_multiplier_string.split(' ')
+            # The spec states that numerator, denominator should be "digit". Allow for floats.
+            # float() / float() also ensures output is float in Py2 and Py3
+            frame_rate_multiplier = float(numerator) / float(denominator)
+
+        # Default to 30fps
+        frame_rate_string = tt.attrs.get('ttp:framerate', "30")
+        frame_rate = int(frame_rate_string)
+
+        calculated_frame_rate = frame_rate * frame_rate_multiplier
+        return calculated_frame_rate
+
+    def _frames_to_microseconds(self, frames):
+        """ Uses document's given framerate to convert frames counts to microseconds"""
+        # the duration of a frame using framerate from document / default
+        frame_micro =  1000000 / self.framerate
+        frames_micro_count = frame_micro * frames
+        return frames_micro_count
+
     def _translate_div(self, div):
+        captions =  [caption for caption in [self._translate_p_tag(p_tag) for p_tag in div.find_all(u'p')] if caption is not None]
         return CaptionList(
-            [self._translate_p_tag(p_tag) for p_tag in div.find_all('p')],
+            #[self._translate_p_tag(p_tag) for p_tag in div.find_all('p')],
+            captions,
             div.layout_info
         )
 
@@ -108,12 +144,12 @@ class DFXPReader(BaseReader):
         self.nodes = []
         self._translate_tag(p_tag)
         styles = self._translate_style(p_tag)
-
+        # Removes Blank CaptionNode
         if len(self.nodes) > 0:
             return Caption(
-                start, end, self.nodes, style=styles,
-                layout_info=p_tag.layout_info)
-        return None
+                start, end, self.nodes, style=styles, layout_info=p_tag.layout_info)
+        else:
+            return None
 
     def _find_times(self, p_tag):
         start = self._translate_time(p_tag['begin'])
@@ -127,20 +163,28 @@ class DFXPReader(BaseReader):
         return start, end
 
     def _translate_time(self, stamp):
+        """ Get time in microseconds"""
         if stamp[-1].isdigit():
+            # HH:MM:SS.MS or HH:MM:SS:Frames
             timesplit = stamp.split(':')
-            if '.' not in timesplit[2]:
-                timesplit[2] += '.000'
-            secsplit = timesplit[2].split('.')
+
+            hours = int(timesplit[0])
+            mins = int(timesplit[1])
+            secs = float(timesplit[2])
+
+            microseconds = (hours * 3600000000 +
+                            mins * 60000000 +
+                            secs * 1000000
+                            )
+
+            # Frame calculation
             if len(timesplit) > 3:
-                secsplit.append((int(timesplit[3]) / 30) * 100)
-            while len(secsplit[1]) < 3:
-                secsplit[1] += '0'
-            microseconds = (int(timesplit[0]) * 3600000000 +
-                            int(timesplit[1]) * 60000000 +
-                            int(secsplit[0]) * 1000000 +
-                            int(secsplit[1]) * 1000)
-            return microseconds
+                frames = int(timesplit[3])
+                # frames *should* be < document fps. Excess frames will also be counted
+                microseconds += self._frames_to_microseconds(frames)
+
+            return int(microseconds)
+
         else:
             # Must be offset-time
             m = re.search('^([0-9.]+)([a-z]+)$', stamp)
@@ -154,6 +198,8 @@ class DFXPReader(BaseReader):
                 microseconds = value * 1000000
             elif metric == "ms":
                 microseconds = value * 1000
+            elif metric == "f":
+                microseconds = self._frames_to_microseconds(value)
             else:
                 raise InvalidInputError("Unsupported offset-time metric " + metric)
 
@@ -183,6 +229,27 @@ class DFXPReader(BaseReader):
         elif tag.name == 'span':
             # convert span
             self._translate_span(tag)
+        # Catch p-tags that do not come up as NavigableString
+        elif tag.name == 'p':
+            if tag.text:
+                """
+                formatted_text: is a catch all statement for dfxp files that contain br tags within a p tag
+                since it is not expecting br tags after seeing a p tag it leaves it in the string causing texts to have
+                lines concatenated together
+                """
+                formatted_text = tag.text.replace('<br/>', '\n').replace('<br>', '\n')
+                node = CaptionNode.create_text(formatted_text, tag.layout_info)
+                self.nodes.append(node)
+
+            elif not tag.contents:
+                node = CaptionNode.create_text(
+                    '', layout_info=tag.layout_info)
+                self.nodes.append(node)
+        # Done catch p-tags error
+        # elif tag.name == 'p' and not tag.contents:
+        #     node = CaptionNode.create_text(
+        #         '', layout_info=tag.layout_info)
+        #     self.nodes.append(node)
         else:
             # recursively call function for any children elements
             for a in tag.contents:
